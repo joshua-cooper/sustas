@@ -1,24 +1,27 @@
 //! Wi-Fi status bar module.
 
-use crate::{block::Block, dbus};
+use self::interfaces::{DeviceProxy, NetworkProxy, StationProxy};
+use crate::{
+    block::Block,
+    dbus::{get_object_path, option_change},
+};
 use async_stream::stream;
-use futures_util::{future::OptionFuture, Stream, StreamExt};
+use futures_util::{Stream, StreamExt};
 use serde::Deserialize;
 use zbus::{
     fdo::ObjectManagerProxy,
     zvariant::{ObjectPath, OwnedObjectPath},
-    Connection, PropertyStream,
+    Connection, PropertyChanged, PropertyStream,
 };
 
-/// Wi-Fi status bar module.
+/// Wi-Fi module config.
 #[derive(Deserialize)]
-#[serde(default)]
-pub struct Wifi {
-    /// The interface to watch.
+pub struct Config {
+    /// The name of the interface to watch, for example "wlan0".
     pub interface: String,
 }
 
-impl Wifi {
+impl Config {
     /// Returns a stream of block updates.
     ///
     /// # Panics
@@ -27,155 +30,171 @@ impl Wifi {
     pub fn stream(self) -> impl Stream<Item = Option<Block>> {
         stream! {
             let connection = Connection::system().await.unwrap();
-
-            let object_manager = ObjectManagerProxy::builder(&connection)
-                .destination("net.connman.iwd")
-                .unwrap()
-                .path("/")
-                .unwrap()
-                .build()
-                .await
-                .unwrap();
-
-            let path = dbus::find_path(
-                &object_manager,
-                "net.connman.iwd.Device",
-                "Name",
-                self.interface.as_str(),
-            )
-            .await
-            .unwrap()
-            .unwrap();
-
-            let mut device = Device::connect(&connection, path.as_ref()).await.unwrap();
-
-            loop {
-                yield device.block();
-                device.wait_for_change().await.unwrap();
-            }
+            let wifi = Wifi::new(&connection, self).await.unwrap();
+            yield wifi.block();
         }
     }
 }
 
-impl Default for Wifi {
-    fn default() -> Self {
-        Self {
-            interface: "wlan0".into(),
-        }
-    }
-}
-
-struct Network<'a> {
-    name: String,
-    name_changes: PropertyStream<'a, String>,
-}
-
-impl<'a> Network<'a> {
-    async fn wait_for_change(&mut self) -> zbus::Result<()> {
-        if let Some(change) = self.name_changes.next().await {
-            self.name = change.get().await?;
-        }
-
-        Ok(())
-    }
-}
-
-struct Device<'a> {
+/// Wi-Fi status bar module.
+pub struct Wifi<'a> {
     connection: &'a Connection,
-    powered: bool,
+    device_path: ObjectPath<'a>,
     powered_changes: PropertyStream<'a, bool>,
-    connected_network: Option<Network<'a>>,
-    connected_network_changes: PropertyStream<'a, OwnedObjectPath>,
+    connected_network_changes: Option<PropertyStream<'a, OwnedObjectPath>>,
+    connected_network_name_changes: Option<PropertyStream<'a, String>>,
+    state: State,
 }
 
-impl<'a> Device<'a> {
-    async fn connect(connection: &'a Connection, path: ObjectPath<'a>) -> zbus::Result<Device<'a>> {
-        let device = interfaces::DeviceProxy::builder(connection)
-            .path(&path)?
+impl<'a> Wifi<'a> {
+    /// Creates a new instance of [`Wifi`].
+    ///
+    /// # Errors
+    ///
+    /// TODO
+    ///
+    /// # Panics
+    ///
+    /// TODO
+    pub async fn new(connection: &'a Connection, config: Config) -> zbus::Result<Wifi<'a>> {
+        let object_manager = ObjectManagerProxy::builder(connection)
+            .destination("net.connman.iwd")
+            .expect("valid bus name")
+            .path("/")
+            .expect("valid path")
             .build()
             .await?;
 
-        let station = interfaces::StationProxy::builder(connection)
-            .path(&path)?
+        let device_path = get_object_path(
+            &object_manager.get_managed_objects().await?,
+            "net.connman.iwd.Device",
+            "Name",
+            config.interface.as_str(),
+        )
+        .unwrap()
+        .to_owned();
+
+        let device = DeviceProxy::builder(connection)
+            .path(&device_path)
+            .expect("valid path")
             .build()
             .await?;
-
-        let connected_network = match station.connected_network().await.ok() {
-            Some(path) => {
-                let network = interfaces::NetworkProxy::builder(connection)
-                    .path(path)?
-                    .build()
-                    .await?;
-
-                Some(Network {
-                    name: network.name().await?,
-                    name_changes: network.receive_name_changed().await,
-                })
-            }
-            None => None,
-        };
 
         Ok(Self {
             connection,
-            powered: device.powered().await?,
+            device_path,
             powered_changes: device.receive_powered_changed().await,
-            connected_network,
-            connected_network_changes: station.receive_connected_network_changed().await,
+            connected_network_changes: None,
+            connected_network_name_changes: None,
+            state: State::PoweredOff,
         })
     }
 
-    fn block(&self) -> Option<Block> {
-        self.powered
-            .then_some(self.connected_network.as_ref().map_or_else(
-                || Block {
-                    text: "".into(),
-                    short_text: Some("".into()),
-                    color: Some("#888888".into()),
-                },
-                |network| Block {
-                    text: format!(" {}", network.name),
-                    short_text: Some("".into()),
-                    color: None,
-                },
-            ))
-    }
-
-    async fn wait_for_change(&mut self) -> zbus::Result<()> {
-        let connected_network_change = OptionFuture::from(
-            self.connected_network
-                .as_mut()
-                .map(Network::wait_for_change),
-        );
-
-        tokio::select! {
-            Some(change) = self.powered_changes.next() => {
-                self.powered = change.get().await?;
-            }
-
-            Some(change) = self.connected_network_changes.next() => {
-                self.connected_network = match change.get().await.ok() {
-                    Some(path) => {
-                        let network = interfaces::NetworkProxy::builder(self.connection)
-                            .path(path)?
-                            .build()
-                            .await?;
-
-                        Some(Network {
-                            name: network.name().await?,
-                            name_changes: network.receive_name_changed().await,
-                        })
-                    },
-                    None => None,
-                };
-            }
-
-            Some(result) = connected_network_change => {
-                result?;
+    /// Returns a stream of block updates.
+    pub fn stream(mut self) -> impl Stream<Item = Option<Block>> + 'a {
+        stream! {
+            loop {
+                yield self.block();
+                self.wait_for_update().await;
             }
         }
-
-        Ok(())
     }
+
+    async fn wait_for_update(&mut self) {
+        tokio::select! {
+            Some(change) = self.powered_changes.next() => {
+                self.handle_powered_change(change).await;
+            },
+
+            Some(Some(change)) = option_change(self.connected_network_changes.as_mut()) => {
+                self.handle_connected_network_change(change).await;
+            },
+
+            Some(Some(change)) = option_change(self.connected_network_name_changes.as_mut()) => {
+                self.handle_connected_network_name_change(change).await;
+            },
+        }
+    }
+
+    fn block(&self) -> Option<Block> {
+        match &self.state {
+            State::PoweredOff => None,
+            State::Disconnected => Some(Block {
+                text: "".into(),
+                short_text: Some("".into()),
+                color: Some("#888888".into()),
+            }),
+            State::Connected => Some(Block {
+                text: "".into(),
+                short_text: Some("".into()),
+                color: None,
+            }),
+            State::ConnectedTo(network_name) => Some(Block {
+                text: format!(" {network_name}"),
+                short_text: Some("".into()),
+                color: None,
+            }),
+        }
+    }
+
+    async fn handle_powered_change(&mut self, change: PropertyChanged<'a, bool>) {
+        if change.get().await.unwrap_or_default() {
+            self.connected_network_changes = Some(
+                StationProxy::builder(self.connection)
+                    .path(&self.device_path)
+                    .expect("valid path")
+                    .build()
+                    .await
+                    .unwrap()
+                    .receive_connected_network_changed()
+                    .await,
+            );
+
+            self.state = State::Disconnected;
+        } else {
+            self.state = State::PoweredOff;
+            self.connected_network_changes = None;
+            self.connected_network_name_changes = None;
+        }
+    }
+
+    async fn handle_connected_network_change(
+        &mut self,
+        change: PropertyChanged<'a, OwnedObjectPath>,
+    ) {
+        if let Ok(connected_network) = change.get().await {
+            self.connected_network_name_changes = Some(
+                NetworkProxy::builder(self.connection)
+                    .path(connected_network)
+                    .expect("valid path")
+                    .build()
+                    .await
+                    .unwrap()
+                    .receive_name_changed()
+                    .await,
+            );
+            self.state = State::Connected;
+        } else {
+            self.state = State::Disconnected;
+            self.connected_network_name_changes = None;
+        }
+    }
+
+    async fn handle_connected_network_name_change(&mut self, change: PropertyChanged<'a, String>) {
+        if let Ok(connected_network_name) = change.get().await {
+            self.state = State::ConnectedTo(connected_network_name);
+        } else {
+            self.state = State::Connected;
+        }
+    }
+}
+
+#[derive(Debug)]
+enum State {
+    PoweredOff,
+    Disconnected,
+    Connected,
+    ConnectedTo(String),
 }
 
 mod interfaces {

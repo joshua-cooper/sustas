@@ -13,7 +13,6 @@
 pub mod bar;
 pub mod block;
 pub mod config;
-#[cfg(feature = "zbus")]
 pub mod dbus;
 pub mod format;
 pub mod modules;

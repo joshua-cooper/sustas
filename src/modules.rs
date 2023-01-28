@@ -29,5 +29,5 @@ pub enum Module {
     BluetoothDevice(self::bluetooth::BluetoothDevice),
     /// Wi-Fi module.
     #[cfg(feature = "wifi")]
-    Wifi(self::wifi::Wifi),
+    Wifi(self::wifi::Config),
 }
