@@ -19,12 +19,12 @@ serde_json = { version = "1.0.87", optional = true }
 time = { version = "0.3.17", optional = true }
 tokio = { version = "1.21.2", features = ["rt-multi-thread", "macros"] }
 toml = "0.5.9"
-zbus = { version = "3.4.0", optional = true, features = ["tokio"] }
+zbus = { version = "3.4.0", features = ["tokio"] }
 
 [features]
 default = ["battery", "bluetooth", "clock", "swaybar", "wifi"]
 battery = ["tokio/fs", "tokio/time"]
-bluetooth = ["zbus"]
+bluetooth = []
 clock = ["time/serde-human-readable", "tokio/time"]
 swaybar = ["serde_json"]
-wifi = ["zbus"]
+wifi = []
