@@ -30,8 +30,11 @@ impl Config {
     pub fn stream(self) -> impl Stream<Item = Option<Block>> {
         stream! {
             let connection = Connection::system().await.unwrap();
-            let wifi = Wifi::new(&connection, self).await.unwrap();
-            yield wifi.block();
+            let mut wifi = Wifi::new(&connection, self).await.unwrap();
+            loop {
+                yield wifi.block();
+                wifi.wait_for_update().await;
+            }
         }
     }
 }
