@@ -13,7 +13,7 @@
 use std::error::Error;
 use sustas::{bar::Bar, config::Config};
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
     let config_dir = dirs::config_dir()
         .ok_or("cannot find config directory")?
