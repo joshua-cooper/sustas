@@ -2,21 +2,16 @@
 
 use crate::block::Block;
 use async_stream::stream;
+use chrono::Local;
 use futures_util::Stream;
 use serde::Deserialize;
 use std::time::Duration;
-use time::{
-    format_description::{self, FormatItem},
-    OffsetDateTime, UtcOffset,
-};
 use tokio::time::{Interval, MissedTickBehavior};
 
 /// Clock status bar module.
 #[derive(Deserialize)]
 #[serde(default)]
 pub struct Clock {
-    /// The UTC offset of the clock.
-    pub offset: UtcOffset,
     /// The date and time format to display.
     pub format: String,
     /// The date and time format to display when the bar is shortened.
@@ -33,9 +28,8 @@ impl Clock {
                     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
                     interval
                 },
-                offset: self.offset,
-                format: format_description::parse(&self.format).unwrap(),
-                short_format: format_description::parse(&self.short_format).unwrap(),
+                format: self.format,
+                short_format: self.short_format,
             };
 
             loop {
@@ -48,33 +42,27 @@ impl Clock {
 impl Default for Clock {
     fn default() -> Self {
         Self {
-            offset: UtcOffset::UTC,
-            format: "[year]-[month]-[day] [hour]:[minute]".into(),
-            short_format: "[hour]:[minute]".into(),
+            format: "%Y-%m-%d %H:%M:%S".into(),
+            short_format: "%H:%M".into(),
         }
     }
 }
 
-struct State<'a> {
+struct State {
     interval: Interval,
-    offset: UtcOffset,
-    format: Vec<FormatItem<'a>>,
-    short_format: Vec<FormatItem<'a>>,
+    format: String,
+    short_format: String,
 }
 
-impl<'a> State<'a> {
+impl State {
     async fn next(&mut self) -> Option<Block> {
         self.interval.tick().await;
 
-        let now = OffsetDateTime::now_utc().replace_offset(self.offset);
-
-        let text = now.format(&self.format).unwrap();
-
-        let short_text = now.format(&self.short_format).unwrap();
+        let now = Local::now();
 
         Some(Block {
-            text,
-            short_text: Some(short_text),
+            text: format!("{}", now.format(&self.format)),
+            short_text: Some(format!("{}", now.format(&self.short_format))),
             color: None,
         })
     }
