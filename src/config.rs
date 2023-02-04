@@ -1,34 +1,23 @@
-//! Types for configuring a status bar.
+//! Sustas config.
 
-use crate::{format, modules::Module};
+use crate::modules::{battery, clock, wifi};
 use serde::Deserialize;
 
-/// Output format of the status bar.
-#[derive(Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Format {
-    /// Debug output.
-    Debug,
-    /// Swaybar output.
-    #[cfg(feature = "swaybar")]
-    Swaybar,
-}
-
-impl From<Format> for format::Format {
-    fn from(format: Format) -> Self {
-        match format {
-            Format::Debug => Self::Debug,
-            #[cfg(feature = "swaybar")]
-            Format::Swaybar => Self::Swaybar,
-        }
-    }
-}
-
-/// Configuration for a status bar.
+/// Sustas config.
 #[derive(Deserialize)]
 pub struct Config {
-    /// Output format of the status bar.
-    pub format: Format,
-    /// Configuration for each status bar module.
+    /// Configuration for each module in the bar.
     pub modules: Vec<Module>,
+}
+
+/// A single module's config.
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum Module {
+    /// Battery module config.
+    Battery(battery::Config),
+    /// Clock module config.
+    Clock(clock::Config),
+    /// Wifi module config.
+    Wifi(wifi::Config),
 }

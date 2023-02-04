@@ -10,21 +10,13 @@ categories = ["config", "command-line-utilities"]
 repository = "https://github.com/joshua-cooper/sustas"
 
 [dependencies]
-anyhow = "1.0.66"
-async-stream = "0.3.3"
-chrono = { version = "0.4.23", optional = true }
+anyhow = "1.0.68"
+async-trait = "0.1.63"
+chrono = "0.4.23"
 dirs = "4.0.0"
 futures-util = "0.3.25"
 serde = { version = "1.0.147", features = ["derive"] }
-serde_json = { version = "1.0.87", optional = true }
-tokio = { version = "1.21.2", features = ["rt", "macros"] }
+serde_json = "1.0.87"
+tokio = { version = "1.21.2", features = ["rt-multi-thread", "macros"] }
 toml = "0.5.9"
-zbus = { version = "3.4.0", features = ["tokio"] }
-
-[features]
-default = ["battery", "bluetooth", "clock", "swaybar", "wifi"]
-battery = ["tokio/fs", "tokio/time"]
-bluetooth = []
-clock = ["chrono", "tokio/time"]
-swaybar = ["serde_json"]
-wifi = []
+zbus = { version = "3.9.0", features = ["tokio"] }

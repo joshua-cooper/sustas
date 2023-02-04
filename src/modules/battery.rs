@@ -1,97 +1,124 @@
 //! Battery status bar module.
 
-use crate::block::Block;
-use async_stream::stream;
-use futures_util::Stream;
+use crate::{Block, Module};
+use anyhow::Context;
+use async_trait::async_trait;
 use serde::Deserialize;
 use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
 use tokio::{
-    fs,
-    time::{Interval, MissedTickBehavior},
+    fs::read_to_string,
+    time::{interval, Interval, MissedTickBehavior},
 };
 
-/// Battery status bar module.
+/// Battery module config.
 #[derive(Deserialize)]
-#[serde(default)]
-pub struct Battery {
+pub struct Config {
     /// The name of the battery.
     ///
-    /// This is the name found in `/sys/class/power_supply`, which should look like `BATX` where
-    /// `X` is an integer.
+    /// This is usually in the format "BATX", where "X" is an integer.
     pub name: String,
 }
 
-impl Battery {
-    /// Returns a stream of block updates.
-    pub fn stream(self) -> impl Stream<Item = Option<Block>> {
-        stream! {
-            let mut state = State {
-                interval: {
-                    let mut interval = tokio::time::interval(Duration::from_secs(10));
-                    interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-                    interval
-                },
-                capacity_path: Path::new("/sys/class/power_supply").join(&self.name).join("capacity"),
-                status_path: Path::new("/sys/class/power_supply").join(&self.name).join("status"),
-            };
-
-            loop {
-                yield state.next().await;
-            }
-        }
-    }
-}
-
-impl Default for Battery {
-    fn default() -> Self {
-        Self {
-            name: "BAT0".into(),
-        }
-    }
-}
-
-struct State {
+/// Battery status bar module.
+pub struct Battery {
     interval: Interval,
     capacity_path: PathBuf,
     status_path: PathBuf,
 }
 
-impl State {
-    async fn next(&mut self) -> Option<Block> {
-        self.interval.tick().await;
+impl Battery {
+    /// Creates a new battery module with the provided config.
+    #[must_use]
+    pub fn new(config: Config) -> Self {
+        Self {
+            interval: {
+                let mut interval = interval(Duration::from_secs(5));
+                interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+                interval
+            },
+            capacity_path: Path::new("/sys/class/power_supply")
+                .join(&config.name)
+                .join("capacity"),
+            status_path: Path::new("/sys/class/power_supply")
+                .join(config.name)
+                .join("status"),
+        }
+    }
 
-        let capacity = fs::read_to_string(&self.capacity_path)
+    async fn get_capacity(&self) -> anyhow::Result<u8> {
+        let capacity = read_to_string(&self.capacity_path)
             .await
-            .unwrap()
+            .with_context(|| {
+                format!(
+                    "failed to read battery capacity from {}",
+                    self.capacity_path.display()
+                )
+            })?
             .trim()
             .parse::<u8>()
-            .unwrap();
+            .with_context(|| "failed to parse battery capacity")?;
 
-        let status = fs::read_to_string(&self.status_path).await.unwrap();
+        Ok(capacity)
+    }
 
-        let is_charging = status.trim() == "Charging";
+    async fn get_status(&self) -> anyhow::Result<Status> {
+        let status = read_to_string(&self.status_path).await.with_context(|| {
+            format!(
+                "failed to read battery status from {}",
+                self.status_path.display()
+            )
+        })?;
 
-        let icon = match (is_charging, capacity) {
-            (true, _) => "",
-            (false, 0..=25) => "",
-            (false, 26..=50) => "",
-            (false, 51..=75) => "",
-            _ => "",
+        match status.trim() {
+            "Charging" => Ok(Status::Charging),
+            _ => Ok(Status::Discharging),
+        }
+    }
+}
+
+#[async_trait]
+impl Module for Battery {
+    async fn next_block(&mut self) -> anyhow::Result<Option<Block>> {
+        self.interval.tick().await;
+
+        let (status, capacity) = tokio::join!(self.get_status(), self.get_capacity());
+        let status = status?;
+        let capacity = capacity?;
+
+        if status.is_charging() {
+            return Ok(Some(Block {
+                text: format!(" {capacity}%"),
+                short_text: None,
+                color: Some("#00ff00".into()),
+            }));
+        }
+
+        let (icon, color) = match capacity {
+            0..=25 => ("", Some("#ff0000".into())),
+            26..=50 => ("", None),
+            51..=75 => ("", None),
+            _ => ("", None),
         };
 
-        let color = if is_charging {
-            Some("#00ff00".into())
-        } else {
-            (capacity <= 15).then_some("#ff0000".into())
-        };
-
-        Some(Block {
+        Ok(Some(Block {
             text: format!("{icon} {capacity}%"),
-            short_text: Some(format!("{icon} {capacity}%")),
+            short_text: None,
             color,
-        })
+        }))
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Status {
+    Charging,
+    Discharging,
+}
+
+impl Status {
+    const fn is_charging(self) -> bool {
+        matches!(self, Self::Charging)
     }
 }

@@ -1,4 +1,4 @@
-//! sustas - generate status bars.
+//! sustas - A fast and simple tool to generate status bars.
 
 #![forbid(unsafe_code)]
 #![warn(
@@ -10,24 +10,21 @@
 )]
 #![allow(clippy::multiple_crate_versions)]
 
-use std::error::Error;
-use sustas::{bar::Bar, config::Config};
+use sustas::config::Config;
+use tokio::fs::create_dir_all;
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), Box<dyn Error>> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     let config_dir = dirs::config_dir()
-        .ok_or("cannot find config directory")?
+        .ok_or_else(|| anyhow::anyhow!("cannot find config directory"))?
         .join("sustas");
 
-    std::fs::create_dir_all(&config_dir)?;
+    create_dir_all(&config_dir).await?;
 
     let config_path = config_dir.join("config.toml");
 
     let config = std::fs::read_to_string(config_path)?;
     let config = toml::from_str::<Config>(&config)?;
 
-    let mut bar = Bar::from(config);
-    bar.run().await;
-
-    Ok(())
+    sustas::run(config).await
 }

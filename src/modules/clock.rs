@@ -1,69 +1,65 @@
 //! Clock status bar module.
 
-use crate::block::Block;
-use async_stream::stream;
+use crate::{Block, Module};
+use async_trait::async_trait;
 use chrono::Local;
-use futures_util::Stream;
 use serde::Deserialize;
 use std::time::Duration;
-use tokio::time::{Interval, MissedTickBehavior};
+use tokio::time::{interval, Interval, MissedTickBehavior};
 
-/// Clock status bar module.
+/// Clock module config.
 #[derive(Deserialize)]
 #[serde(default)]
-pub struct Clock {
+pub struct Config {
     /// The date and time format to display.
     pub format: String,
-    /// The date and time format to display when the bar is shortened.
+    /// The short date and time format to display.
     pub short_format: String,
 }
 
-impl Clock {
-    /// Returns a stream of block updates.
-    pub fn stream(self) -> impl Stream<Item = Option<Block>> {
-        stream! {
-            let mut state = State {
-                interval: {
-                    let mut interval = tokio::time::interval(Duration::from_secs(1));
-                    interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-                    interval
-                },
-                format: self.format,
-                short_format: self.short_format,
-            };
-
-            loop {
-                yield state.next().await;
-            }
-        }
-    }
-}
-
-impl Default for Clock {
+impl Default for Config {
     fn default() -> Self {
         Self {
-            format: "%Y-%m-%d %H:%M:%S".into(),
+            format: "%Y-%m-%d %H:%M".into(),
             short_format: "%H:%M".into(),
         }
     }
 }
 
-struct State {
+/// Clock status bar module.
+pub struct Clock {
     interval: Interval,
     format: String,
     short_format: String,
 }
 
-impl State {
-    async fn next(&mut self) -> Option<Block> {
+impl Clock {
+    /// Creates a new clock module with the provided config.
+    #[must_use]
+    pub fn new(config: Config) -> Self {
+        Self {
+            interval: {
+                let mut interval = interval(Duration::from_secs(1));
+                interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+                interval
+            },
+            format: config.format,
+            short_format: config.short_format,
+        }
+    }
+}
+
+#[async_trait]
+impl Module for Clock {
+    async fn next_block(&mut self) -> anyhow::Result<Option<Block>> {
         self.interval.tick().await;
 
         let now = Local::now();
 
-        Some(Block {
+        Ok(Some(Block {
             text: format!("{}", now.format(&self.format)),
             short_text: Some(format!("{}", now.format(&self.short_format))),
             color: None,
-        })
+        }))
     }
 }
